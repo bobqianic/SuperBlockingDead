@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "superblockingdead",
+	"version": "${version}",
+	"name": "SuperBlockingDead",
+	"description": "Client-side Blocking Dead chest pathing and zombie targeting helper.",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/superblockingdead/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"client": [
+			"com.example.HeadHighlighterClient"
+		]
+	},
+    "accessWidener": "assets/superblockingdead/headhighlighter.accesswidener",
+	"depends": {
+		"fabricloader": ">=0.17.0",
+		"minecraft": "~1.21.8",
+		"java": ">=21"
+	}
+}

@@ -1,0 +1,13 @@
+accessWidener v2 named
+
+# RenderLayer.of(...)
+accessible method net/minecraft/client/render/RenderLayer of (Ljava/lang/String;ILcom/mojang/blaze3d/pipeline/RenderPipeline;Lnet/minecraft/client/render/RenderLayer$MultiPhaseParameters;)Lnet/minecraft/client/render/RenderLayer$MultiPhase;
+
+# (optional but recommended) RenderLayer.of(..., hasCrumbling, translucent, ...)
+accessible method net/minecraft/client/render/RenderLayer of (Ljava/lang/String;IZZLcom/mojang/blaze3d/pipeline/RenderPipeline;Lnet/minecraft/client/render/RenderLayer$MultiPhaseParameters;)Lnet/minecraft/client/render/RenderLayer$MultiPhase;
+
+# MultiPhaseParameters + builder + build(boolean)
+accessible class net/minecraft/client/render/RenderLayer$MultiPhaseParameters
+accessible class net/minecraft/client/render/RenderLayer$MultiPhaseParameters$Builder
+accessible method net/minecraft/client/render/RenderLayer$MultiPhaseParameters builder ()Lnet/minecraft/client/render/RenderLayer$MultiPhaseParameters$Builder;
+accessible method net/minecraft/client/render/RenderLayer$MultiPhaseParameters$Builder build (Z)Lnet/minecraft/client/render/RenderLayer$MultiPhaseParameters;
