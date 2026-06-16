@@ -118,6 +118,8 @@ final class HeadHighlighterController {
 
     private static final int CLICKED_TARGET_IGNORE_TICKS = 30 * 20;
     private static final Long2IntOpenHashMap RECENTLY_CLICKED_TARGETS = new Long2IntOpenHashMap();
+    private static final int THROWN_HEALTH_PACK_IGNORE_TICKS = 30 * 20;
+    private static final Long2IntOpenHashMap THROWN_HEALTH_PACK_TARGETS = new Long2IntOpenHashMap();
     private static final int SCOUTED_RESCUE_IGNORE_TICKS = 45 * 20;
     private static final Long2IntOpenHashMap SCOUTED_RESCUE_TARGETS = new Long2IntOpenHashMap();
     private static boolean FORCE_PATH_REBUILD = false;
@@ -247,22 +249,40 @@ final class HeadHighlighterController {
 
     private static final double SAFE_SHOT_LATERAL_MARGIN = 0.14;
     private static final double SAFE_SHOT_VERTICAL_MARGIN = 0.08;
+    private static final double SAFE_SHOT_CORRIDOR_MARGIN = 0.24;
+    private static final double SAFE_SHOT_REPOSITION_STEP = 0.45;
+    private static final double SAFE_SHOT_REPOSITION_CLEARANCE = 0.04;
 
     private static final double ZOMBIE_DIRECTION_CONE_DEGREES = 18.0;
     private static final double ZOMBIE_DIRECTION_CONE_COS =
             Math.cos(Math.toRadians(ZOMBIE_DIRECTION_CONE_DEGREES));
-    private static final double ZOMBIE_LEAD_TICKS = 1.0;
-    private static final double ZOMBIE_VELOCITY_BLEND = 0.55;
-    private static final double ZOMBIE_MAX_HORIZONTAL_LEAD = 0.55;
+    private static final double ZOMBIE_VELOCITY_BLEND = 0.75;
+    private static final double ZOMBIE_MAX_TRACKED_HORIZONTAL_SPEED = 0.55;
+    private static final double ZOMBIE_MAX_HORIZONTAL_LEAD = 1.55;
+    private static final double ZOMBIE_DISTANCE_LEAD_TICKS_PER_BLOCK = 0.08;
+    private static final double ZOMBIE_DEFAULT_BASE_LEAD_TICKS = 3.5;
+    private static final double ZOMBIE_M16_BASE_LEAD_TICKS = 3.0;
+    private static final double ZOMBIE_PISTOL_BASE_LEAD_TICKS = 4.0;
+    private static final double ZOMBIE_SHOTGUN_BASE_LEAD_TICKS = 2.5;
+    private static final double ZOMBIE_DEFAULT_MAX_LEAD_TICKS = 6.0;
+    private static final double ZOMBIE_M16_MAX_LEAD_TICKS = 5.5;
+    private static final double ZOMBIE_PISTOL_MAX_LEAD_TICKS = 6.5;
+    private static final double ZOMBIE_SHOTGUN_MAX_LEAD_TICKS = 4.0;
     private static final HashMap<Integer, Vec3d> LAST_ZOMBIE_POSITIONS = new HashMap<>();
     private static final HashMap<Integer, Vec3d> ZOMBIE_ESTIMATED_VELOCITIES = new HashMap<>();
     private static final double ZOMBIE_SHOOT_RANGE = 20.0;
     private static final double ZOMBIE_SHOOT_RANGE_SQ = ZOMBIE_SHOOT_RANGE * ZOMBIE_SHOOT_RANGE;
+    private static final int LOOT_ABORT_ZOMBIE_COUNT = 10;
+    private static final double LOOT_ABORT_ZOMBIE_RADIUS = 8.0;
+    private static final double LOOT_ABORT_ZOMBIE_RADIUS_SQ =
+            LOOT_ABORT_ZOMBIE_RADIUS * LOOT_ABORT_ZOMBIE_RADIUS;
     private static final double ZOMBIE_PATH_AVOIDANCE_PADDING = PLAYER_HALF_WIDTH + 0.20;
     private static final double ZOMBIE_PATH_VERTICAL_PADDING = 0.25;
     private static final double ZOMBIE_PATH_SEARCH_PADDING = 2.0;
     private static final int AUTO_SHOOT_COOLDOWN_TICKS = 4;
+    private static final int SHOTGUN_SHOT_COOLDOWN_TICKS = 20 * 6;
     private static int autoShootCooldown = 0;
+    private static int shotgunShootCooldown = 0;
     private static final String PISTOL_NAME = "Pistol";
     private static final String M16_NAME = "M16";
     private static final String SHOTGUN_NAME = "Shotgun";
@@ -284,9 +304,12 @@ final class HeadHighlighterController {
     private static final int FOOD_USE_RETRY_TICKS = 40;
     private static int survivalUseCooldown = 0;
 
-    private static final double FOOD_CANCEL_NEAR_ZOMBIE_RANGE = 3.25;
-    private static final double FOOD_CANCEL_NEAR_ZOMBIE_RANGE_SQ =
-            FOOD_CANCEL_NEAR_ZOMBIE_RANGE * FOOD_CANCEL_NEAR_ZOMBIE_RANGE;
+    private static final double CLOSE_ZOMBIE_THREAT_RANGE = 3.25;
+    private static final double CLOSE_ZOMBIE_THREAT_RANGE_SQ =
+            CLOSE_ZOMBIE_THREAT_RANGE * CLOSE_ZOMBIE_THREAT_RANGE;
+    private static final double POINT_BLANK_ZOMBIE_SHOOT_RANGE = 1.35;
+    private static final double POINT_BLANK_ZOMBIE_SHOOT_RANGE_SQ =
+            POINT_BLANK_ZOMBIE_SHOOT_RANGE * POINT_BLANK_ZOMBIE_SHOOT_RANGE;
 
     private static int AUTO_WAYPOINT_INDEX = 1;
     private static long AUTO_LAST_TARGET = NO_POS;
@@ -316,6 +339,8 @@ final class HeadHighlighterController {
     private static final double AUTO_SPRINT_JUMP_TURN_SUPPRESS_DISTANCE = 1.15;
     private static final double AUTO_SPRINT_JUMP_TURN_SUPPRESS_DISTANCE_SQ =
             AUTO_SPRINT_JUMP_TURN_SUPPRESS_DISTANCE * AUTO_SPRINT_JUMP_TURN_SUPPRESS_DISTANCE;
+    private static final double AUTO_COMBAT_MOVE_KEY_THRESHOLD = 0.25;
+    private static final double AUTO_COMBAT_MOVE_MIN_DISTANCE_SQ = 0.10 * 0.10;
 
     // more conservative than 0.55; disables jump on ~45°+ bends
     private static final double AUTO_SPRINT_JUMP_SHARP_TURN_DOT = 0.70;
@@ -574,6 +599,7 @@ final class HeadHighlighterController {
     private static void tickTargetIgnoreTimers() {
         tickRecentlyClickedTargets();
         tickFailedPathTargets();
+        tickThrownHealthPackTargets();
         tickScoutedRescueTargets();
     }
 
@@ -1187,6 +1213,7 @@ final class HeadHighlighterController {
 
         ignored.addAll(RECENTLY_CLICKED_TARGETS.keySet());
         ignored.addAll(FAILED_PATH_TARGETS.keySet());
+        ignored.addAll(THROWN_HEALTH_PACK_TARGETS.keySet());
         return ignored;
     }
 
@@ -1283,7 +1310,9 @@ final class HeadHighlighterController {
             return workerIgnores.contains(targetPacked);
         }
 
-        return RECENTLY_CLICKED_TARGETS.containsKey(targetPacked) || FAILED_PATH_TARGETS.containsKey(targetPacked);
+        return RECENTLY_CLICKED_TARGETS.containsKey(targetPacked)
+                || FAILED_PATH_TARGETS.containsKey(targetPacked)
+                || THROWN_HEALTH_PACK_TARGETS.containsKey(targetPacked);
     }
 
     private static void tickRecentlyClickedTargets() {
@@ -1300,6 +1329,24 @@ final class HeadHighlighterController {
                 RECENTLY_CLICKED_TARGETS.remove(key);
             } else {
                 RECENTLY_CLICKED_TARGETS.put(key, ticks);
+            }
+        }
+    }
+
+    private static void tickThrownHealthPackTargets() {
+        if (THROWN_HEALTH_PACK_TARGETS.isEmpty()) {
+            return;
+        }
+
+        long[] keys = THROWN_HEALTH_PACK_TARGETS.keySet().toLongArray();
+
+        for (long key : keys) {
+            int ticks = THROWN_HEALTH_PACK_TARGETS.get(key) - 1;
+
+            if (ticks <= 0) {
+                THROWN_HEALTH_PACK_TARGETS.remove(key);
+            } else {
+                THROWN_HEALTH_PACK_TARGETS.put(key, ticks);
             }
         }
     }
@@ -2150,6 +2197,10 @@ final class HeadHighlighterController {
             return false;
         }
 
+        if (isIgnoredThrownHealthPackTarget(targetPacked)) {
+            return false;
+        }
+
         BlockPos target = BlockPos.fromLong(targetPacked);
         Box searchBox = new Box(
                 target.getX() - 1.0,
@@ -2166,6 +2217,7 @@ final class HeadHighlighterController {
                 item -> item != null
                         && item.isAlive()
                         && !item.getStack().isEmpty()
+                        && !isIgnoredThrownHealthPackPosition(item.getBlockPos())
                         && isWantedLootStack(item.getStack())
         ).isEmpty();
     }
@@ -4050,6 +4102,35 @@ final class HeadHighlighterController {
 
         RescueTarget rescueTarget = RESCUE_TARGET;
         boolean rescueTargetSet = AUTO_ENABLED && rescueTarget != null;
+        boolean closeZombieThreat = isZombieVeryClose(client, world);
+        boolean lootAbortCrowd = AUTO_ENABLED && hasLootAbortZombieCrowd(client, world);
+
+        if (closeZombieThreat) {
+            if (client.currentScreen instanceof HandledScreen<?>) {
+                closeChestLootForCombat(client);
+                releaseAutoMovement(client);
+                return;
+            }
+
+            if (autoClickCooldown > 0) {
+                autoClickCooldown--;
+            }
+
+            if (autoShootCooldown > 0) {
+                autoShootCooldown--;
+            }
+
+            if (shotgunShootCooldown > 0) {
+                shotgunShootCooldown--;
+            }
+
+            if (tryShootVisibleZombie(client, world)) {
+                return;
+            }
+
+            releaseAutoMovement(client);
+            return;
+        }
 
         if (rescueTargetSet && closeOpenChestForRescue(client)) {
             releaseAutoMovement(client);
@@ -4079,6 +4160,10 @@ final class HeadHighlighterController {
             autoShootCooldown--;
         }
 
+        if (shotgunShootCooldown > 0) {
+            shotgunShootCooldown--;
+        }
+
         if (survivalUseCooldown > 0) {
             survivalUseCooldown--;
         }
@@ -4087,15 +4172,15 @@ final class HeadHighlighterController {
             autoArmorEquipCooldown--;
         }
 
+        if (!lootAbortCrowd && tryShootVisibleZombie(client, world)) {
+            return;
+        }
+
         if (tryAutoEquipArmor(client)) {
             return;
         }
 
         if (tryUseSurvivalItem(client, world)) {
-            return;
-        }
-
-        if (tryShootVisibleZombie(client, world)) {
             return;
         }
 
@@ -4109,7 +4194,7 @@ final class HeadHighlighterController {
             return;
         }
 
-        if (!rescueTargetSet && !canContinuePathfindingWithInventory(client)) {
+        if (!rescueTargetSet && !lootAbortCrowd && !canContinuePathfindingWithInventory(client)) {
             releaseAutoMovement(client);
             return;
         }
@@ -4120,6 +4205,9 @@ final class HeadHighlighterController {
 
         if (targetPacked == NO_POS || path.length == 0) {
             releaseAutoMovement(client);
+            if (lootAbortCrowd) {
+                tryShootVisibleZombie(client, world);
+            }
             return;
         }
 
@@ -4142,21 +4230,21 @@ final class HeadHighlighterController {
             return;
         }
 
-        if (isPathBlockedByLiveZombie(world, path)) {
+        if (!lootAbortCrowd && isPathBlockedByLiveZombie(world, path)) {
             releaseAutoMovement(client);
             FORCE_PATH_REBUILD = true;
             pathRefreshCountdown = 0;
             return;
         }
 
-        if (shouldRepathForOffRoutePlayer(client, world, path)) {
+        if (!lootAbortCrowd && shouldRepathForOffRoutePlayer(client, world, path)) {
             releaseAutoMovement(client);
             FORCE_PATH_REBUILD = true;
             pathRefreshCountdown = 0;
             return;
         }
 
-        if (pathMode == PathMode.CHEST && !rescueTargetSet) {
+        if (pathMode == PathMode.CHEST && !rescueTargetSet && !lootAbortCrowd) {
             long reachableTargetPacked = findReachableTargetFromPlayer(client, world, targetPacked);
             if (reachableTargetPacked != NO_POS) {
                 BlockPos reachableTargetPos = BlockPos.fromLong(reachableTargetPacked);
@@ -4184,6 +4272,17 @@ final class HeadHighlighterController {
         }
 
         if (tryUseDoorOnPath(client, world, path, next)) {
+            return;
+        }
+
+        if (lootAbortCrowd) {
+            if (tryShootVisibleZombie(client, world, false)) {
+                driveTowardWaypointWhileAiming(client, world, path, next);
+            } else {
+                Vec3d aimPoint = getAutoAimPoint(client, path, next);
+                float yawError = facePointYawOnlyPrecise(client, aimPoint);
+                driveTowardWaypoint(client, world, path, yawError);
+            }
             return;
         }
 
@@ -4359,7 +4458,7 @@ final class HeadHighlighterController {
             return true;
         }
 
-        if (isZombieVeryClose(client, world)) {
+        if (shouldStopLootingForCombat(client, world)) {
             closeChestLootForCombat(client);
             return false;
         }
@@ -4498,7 +4597,7 @@ final class HeadHighlighterController {
         ScreenHandler handler = client.player.currentScreenHandler;
         if (handler != null
                 && isHandledScreenOpen(client, handler)
-                && tryThrowHealthPackForSpace(client, handler)) {
+                && tryThrowHealthPackForSpace(client, handler, true)) {
             return true;
         }
 
@@ -4539,6 +4638,13 @@ final class HeadHighlighterController {
             return false;
         }
 
+        if (shouldStopLootingForCombat(client, world)) {
+            if (AUTO_INVENTORY_OPENED) {
+                closeAutoInventory(client);
+            }
+            return false;
+        }
+
         if (AUTO_INVENTORY_OPENED) {
             if (!(client.currentScreen instanceof InventoryScreen)
                     || !isHandledScreenOpen(client, client.player.playerScreenHandler)) {
@@ -4558,6 +4664,11 @@ final class HeadHighlighterController {
                 return true;
             }
 
+            if (hasWearableArmorInHotbar(client)) {
+                closeAutoInventory(client);
+                return true;
+            }
+
             if (tryManageOpenHandledInventory(client, client.player.playerScreenHandler, world, false)) {
                 return true;
             }
@@ -4567,6 +4678,10 @@ final class HeadHighlighterController {
         }
 
         if (client.currentScreen != null) {
+            return false;
+        }
+
+        if (hasWearableArmorInHotbar(client)) {
             return false;
         }
 
@@ -4613,7 +4728,7 @@ final class HeadHighlighterController {
                 ? isMainInventoryFull(client.player.getInventory())
                 : shouldOpenInventoryForPickupSpace(client, world);
 
-        if (shouldMakeSpace && tryThrowHealthPackForSpace(client, handler)) {
+        if (shouldMakeSpace && tryThrowHealthPackForSpace(client, handler, chestScreen)) {
             inventoryMoveCooldown = INVENTORY_MOVE_COOLDOWN_TICKS;
             return true;
         }
@@ -4755,8 +4870,16 @@ final class HeadHighlighterController {
         return true;
     }
 
-    private static boolean tryThrowHealthPackForSpace(MinecraftClient client, ScreenHandler handler) {
+    private static boolean tryThrowHealthPackForSpace(
+            MinecraftClient client,
+            ScreenHandler handler,
+            boolean allowRepeatedThrowInRecentArea
+    ) {
         if (extraHealthPackThrowCooldown > 0 || client.player == null || client.interactionManager == null) {
+            return false;
+        }
+
+        if (!allowRepeatedThrowInRecentArea && isIgnoredThrownHealthPackPosition(client.player.getBlockPos())) {
             return false;
         }
 
@@ -4780,7 +4903,34 @@ final class HeadHighlighterController {
         );
 
         extraHealthPackThrowCooldown = EXTRA_HEALTH_PACK_THROW_COOLDOWN_TICKS;
+        markThrownHealthPackTarget(client.player.getBlockPos());
         return true;
+    }
+
+    private static void markThrownHealthPackTarget(BlockPos playerPos) {
+        if (playerPos == null) {
+            return;
+        }
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    BlockPos ignoredPos = playerPos.add(dx, dy, dz);
+                    THROWN_HEALTH_PACK_TARGETS.put(ignoredPos.asLong(), THROWN_HEALTH_PACK_IGNORE_TICKS);
+                }
+            }
+        }
+
+        FORCE_PATH_REBUILD = true;
+        pathRefreshCountdown = 0;
+    }
+
+    private static boolean isIgnoredThrownHealthPackTarget(long targetPacked) {
+        return targetPacked != NO_POS && THROWN_HEALTH_PACK_TARGETS.containsKey(targetPacked);
+    }
+
+    private static boolean isIgnoredThrownHealthPackPosition(BlockPos pos) {
+        return pos != null && isIgnoredThrownHealthPackTarget(pos.asLong());
     }
 
     private static int findThrowableHealthPackSlot(PlayerInventory inventory) {
@@ -4922,7 +5072,7 @@ final class HeadHighlighterController {
         }
 
         for (long target : DROPPED_ITEM_POSITIONS_SNAPSHOT) {
-            if (isDroppedItemTargetStillValid(world, target)) {
+            if (!isIgnoredThrownHealthPackTarget(target) && isDroppedItemTargetStillValid(world, target)) {
                 return true;
             }
         }
@@ -4983,6 +5133,24 @@ final class HeadHighlighterController {
         return false;
     }
 
+    private static boolean hasWearableArmorInHotbar(MinecraftClient client) {
+        if (client.player == null) {
+            return false;
+        }
+
+        PlayerInventory inventory = client.player.getInventory();
+        for (int inventorySlot = 0; inventorySlot < PlayerInventory.getHotbarSize(); inventorySlot++) {
+            ItemStack stack = inventory.getStack(inventorySlot);
+            EquipmentSlot equipmentSlot = getArmorEquipmentSlot(stack);
+
+            if (equipmentSlot != null && client.player.getEquippedStack(equipmentSlot).isEmpty()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static int getPlayerInventoryScreenSlot(int inventorySlot) {
         int hotbarSize = PlayerInventory.getHotbarSize();
 
@@ -5002,14 +5170,13 @@ final class HeadHighlighterController {
             return false;
         }
 
-        boolean zombieTooCloseForFood = isZombieVeryClose(client, world);
+        boolean zombieTooCloseForSurvivalUse = isZombieVeryClose(client, world);
 
         if (client.player.isUsingItem()) {
             ItemStack activeItem = client.player.getActiveItem();
             SurvivalUseType activeType = getSurvivalUseType(activeItem);
 
-            // stop eating immediately if danger gets too close
-            if (activeType == SurvivalUseType.FOOD && zombieTooCloseForFood) {
+            if (activeType != null && zombieTooCloseForSurvivalUse) {
                 releaseAutoUse(client);
                 client.player.stopUsingItem();
                 survivalUseCooldown = 0;
@@ -5026,7 +5193,7 @@ final class HeadHighlighterController {
             return false;
         }
 
-        int slot = getNeededSurvivalHotbarSlot(client, zombieTooCloseForFood);
+        int slot = getNeededSurvivalHotbarSlot(client, zombieTooCloseForSurvivalUse);
         if (slot < 0) {
             releaseAutoUse(client);
             return false;
@@ -5047,8 +5214,12 @@ final class HeadHighlighterController {
         return true;
     }
 
-    private static int getNeededSurvivalHotbarSlot(MinecraftClient client, boolean zombieTooCloseForFood) {
+    private static int getNeededSurvivalHotbarSlot(MinecraftClient client, boolean zombieTooCloseForSurvivalUse) {
         if (client.player == null) {
+            return -1;
+        }
+
+        if (zombieTooCloseForSurvivalUse) {
             return -1;
         }
 
@@ -5061,7 +5232,7 @@ final class HeadHighlighterController {
             }
         }
 
-        if (!zombieTooCloseForFood && client.player.getHungerManager().getFoodLevel() <= FOOD_TRIGGER_LEVEL) {
+        if (client.player.getHungerManager().getFoodLevel() <= FOOD_TRIGGER_LEVEL) {
             int foodSlot = findFoodHotbarSlot(inventory);
             if (foodSlot >= 0) {
                 return foodSlot;
@@ -5116,6 +5287,10 @@ final class HeadHighlighterController {
     }
 
     private static boolean tryShootVisibleZombie(MinecraftClient client, ClientWorld world) {
+        return tryShootVisibleZombie(client, world, true);
+    }
+
+    private static boolean tryShootVisibleZombie(MinecraftClient client, ClientWorld world, boolean stopMovement) {
         if (client.player == null || client.interactionManager == null || client.options == null) {
             return false;
         }
@@ -5126,22 +5301,47 @@ final class HeadHighlighterController {
             return false;
         }
 
-        int gunSlot = findGunHotbarSlot(client, targetChoice.directionalZombieCount());
+        boolean closeZombieThreat = isZombieVeryClose(client, world);
+        int gunSlot = findGunHotbarSlot(client, targetChoice.directionalZombieCount(), closeZombieThreat);
         if (gunSlot < 0) {
             releaseAutoUse(client);
             return false;
         }
 
-        releaseAutoMovement(client);
+        if (stopMovement) {
+            releaseAutoMovement(client);
+        }
         client.player.getInventory().setSelectedSlot(gunSlot);
-        lookAt(client, targetChoice.aimPoint());
 
-        if (isNamedStack(client.player.getInventory().getStack(gunSlot), M16_NAME)) {
+        ItemStack selectedGun = client.player.getInventory().getStack(gunSlot);
+        Vec3d weaponAimPoint = getBestZombieAimPoint(world, client.player.getEyePos(), targetChoice.zombie(), selectedGun);
+        if (weaponAimPoint == null
+                && client.player.squaredDistanceTo(targetChoice.zombie()) <= POINT_BLANK_ZOMBIE_SHOOT_RANGE_SQ) {
+            weaponAimPoint = getPointBlankZombieAimPoint(world, client.player.getEyePos(), targetChoice.zombie());
+        }
+
+        if (weaponAimPoint == null) {
+            weaponAimPoint = targetChoice.aimPoint();
+        }
+
+        lookAt(client, weaponAimPoint);
+
+        if (!hasSafeClearShot(world, client.player.getEyePos(), weaponAimPoint)) {
+            releaseAutoUse(client);
+            repositionForClearShot(client, world, weaponAimPoint);
+            return true;
+        }
+
+        if (isNamedStack(selectedGun, M16_NAME)) {
             client.options.useKey.setPressed(true);
             return true;
         }
 
         releaseAutoUse(client);
+
+        if (isNamedStack(selectedGun, SHOTGUN_NAME) && shotgunShootCooldown > 0) {
+            return true;
+        }
 
         if (autoShootCooldown > 0) {
             return true;
@@ -5150,6 +5350,9 @@ final class HeadHighlighterController {
         client.interactionManager.interactItem(client.player, Hand.MAIN_HAND);
         client.player.swingHand(Hand.MAIN_HAND);
         autoShootCooldown = AUTO_SHOOT_COOLDOWN_TICKS;
+        if (isNamedStack(selectedGun, SHOTGUN_NAME)) {
+            shotgunShootCooldown = SHOTGUN_SHOT_COOLDOWN_TICKS;
+        }
 
         return true;
     }
@@ -5171,7 +5374,11 @@ final class HeadHighlighterController {
         ZombieAimCandidate best = null;
 
         for (ZombieEntity zombie : zombies) {
-            Vec3d aimPoint = getBestZombieAimPoint(world, eye, zombie);
+            Vec3d aimPoint = getBestZombieAimPoint(world, eye, zombie, ItemStack.EMPTY);
+            if (aimPoint == null && client.player.squaredDistanceTo(zombie) <= POINT_BLANK_ZOMBIE_SHOOT_RANGE_SQ) {
+                aimPoint = getPointBlankZombieAimPoint(world, eye, zombie);
+            }
+
             if (aimPoint == null) {
                 continue;
             }
@@ -5235,32 +5442,38 @@ final class HeadHighlighterController {
         return hit.getType() == HitResult.Type.MISS;
     }
 
-    private static int findGunHotbarSlot(MinecraftClient client, int visibleZombieCount) {
+    private static int findGunHotbarSlot(MinecraftClient client, int visibleZombieCount, boolean closeZombieThreat) {
         if (client.player == null) {
             return -1;
         }
 
         PlayerInventory inventory = client.player.getInventory();
-        int selectedSlot = inventory.getSelectedSlot();
-        String[] priority = getGunPriority(visibleZombieCount);
+        String[] priority = getGunPriority(visibleZombieCount, closeZombieThreat);
+        int coolingShotgunSlot = -1;
 
         for (String gunName : priority) {
             if (!hasAmmoForGun(inventory, gunName)) {
                 continue;
             }
 
-            if (isNamedStack(inventory.getStack(selectedSlot), gunName)) {
-                return selectedSlot;
+            int slot = findNamedHotbarSlot(inventory, gunName);
+            if (slot < 0) {
+                continue;
             }
 
-            for (int slot = 0; slot < PlayerInventory.getHotbarSize(); slot++) {
-                if (isNamedStack(inventory.getStack(slot), gunName)) {
-                    return slot;
-                }
+            if (closeZombieThreat && isShotgunCoolingDown(gunName)) {
+                coolingShotgunSlot = slot;
+                continue;
             }
+
+            return slot;
         }
 
-        return -1;
+        return coolingShotgunSlot;
+    }
+
+    private static boolean isShotgunCoolingDown(String gunName) {
+        return SHOTGUN_NAME.equals(gunName) && shotgunShootCooldown > 0;
     }
 
     private static boolean hasAmmoForGun(PlayerInventory inventory, String gunName) {
@@ -5323,7 +5536,11 @@ final class HeadHighlighterController {
         return -1;
     }
 
-    private static String[] getGunPriority(int visibleZombieCount) {
+    private static String[] getGunPriority(int visibleZombieCount, boolean closeZombieThreat) {
+        if (closeZombieThreat) {
+            return HIGH_ZOMBIE_GUN_PRIORITY;
+        }
+
         if (visibleZombieCount <= LOW_ZOMBIE_COUNT_MAX) {
             return LOW_ZOMBIE_GUN_PRIORITY;
         }
@@ -5931,6 +6148,159 @@ final class HeadHighlighterController {
         }
 
         client.options.jumpKey.setPressed(shouldJump);
+    }
+
+    private static void driveTowardWaypointWhileAiming(
+            MinecraftClient client,
+            ClientWorld world,
+            long[] path,
+            BlockPos waypoint
+    ) {
+        if (client.player == null || client.options == null || world == null || path == null || path.length == 0) {
+            return;
+        }
+
+        AUTO_WAS_DRIVING = true;
+        resetSideCorrection();
+
+        client.options.sprintKey.setPressed(true);
+        pressMovementKeysTowardCurrentAim(client, getAutoAimPoint(client, path, waypoint));
+
+        boolean enteringLowJumpClearanceAhead = isEnteringLowJumpClearanceAhead(client, world, path);
+        boolean shouldJump = client.player.isOnGround()
+                && client.player.horizontalCollision
+                && !enteringLowJumpClearanceAhead;
+
+        double waypointFeetY = getStandingFeetY(world, waypoint);
+        if (!Double.isNaN(waypointFeetY)) {
+            Vec3d waypointCenter = new Vec3d(
+                    waypoint.getX() + 0.5,
+                    waypointFeetY,
+                    waypoint.getZ() + 0.5
+            );
+
+            double rise = waypointFeetY - client.player.getY();
+            double horizontalDistSq = horizontalDistanceSq(client.player.getPos(), waypointCenter);
+
+            if (rise > STEP_HEIGHT + JUMP_RISE_EPSILON && horizontalDistSq <= JUMP_TRIGGER_DISTANCE_SQ) {
+                shouldJump = true;
+            }
+        }
+
+        if (!shouldJump && shouldJumpOutOfWater(client, world, path)) {
+            shouldJump = true;
+        }
+
+        client.options.jumpKey.setPressed(shouldJump);
+    }
+
+    private static void pressMovementKeysTowardCurrentAim(MinecraftClient client, Vec3d target) {
+        client.options.forwardKey.setPressed(false);
+        client.options.backKey.setPressed(false);
+        client.options.leftKey.setPressed(false);
+        client.options.rightKey.setPressed(false);
+
+        if (client.player == null || target == null) {
+            return;
+        }
+
+        Vec3d playerPos = client.player.getPos();
+        double dx = target.x - playerPos.x;
+        double dz = target.z - playerPos.z;
+        double lenSq = dx * dx + dz * dz;
+        if (lenSq < AUTO_COMBAT_MOVE_MIN_DISTANCE_SQ) {
+            return;
+        }
+
+        double invLen = 1.0 / Math.sqrt(lenSq);
+        dx *= invLen;
+        dz *= invLen;
+
+        double yaw = Math.toRadians(client.player.getYaw());
+        double forwardX = -Math.sin(yaw);
+        double forwardZ = Math.cos(yaw);
+        double rightX = Math.cos(yaw);
+        double rightZ = Math.sin(yaw);
+
+        double forward = dx * forwardX + dz * forwardZ;
+        double right = dx * rightX + dz * rightZ;
+
+        boolean pressForward = forward > AUTO_COMBAT_MOVE_KEY_THRESHOLD;
+        boolean pressBack = forward < -AUTO_COMBAT_MOVE_KEY_THRESHOLD;
+        boolean pressRight = right > AUTO_COMBAT_MOVE_KEY_THRESHOLD;
+        boolean pressLeft = right < -AUTO_COMBAT_MOVE_KEY_THRESHOLD;
+
+        if (!pressForward && !pressBack && !pressRight && !pressLeft) {
+            if (Math.abs(forward) >= Math.abs(right)) {
+                pressForward = forward >= 0.0;
+                pressBack = !pressForward;
+            } else {
+                pressRight = right >= 0.0;
+                pressLeft = !pressRight;
+            }
+        }
+
+        client.options.forwardKey.setPressed(pressForward);
+        client.options.backKey.setPressed(pressBack);
+        client.options.rightKey.setPressed(pressRight);
+        client.options.leftKey.setPressed(pressLeft);
+    }
+
+    private static void repositionForClearShot(MinecraftClient client, ClientWorld world, Vec3d target) {
+        if (client.player == null || client.options == null || world == null || target == null) {
+            return;
+        }
+
+        client.options.forwardKey.setPressed(false);
+        client.options.backKey.setPressed(false);
+        client.options.leftKey.setPressed(false);
+        client.options.rightKey.setPressed(false);
+        client.options.jumpKey.setPressed(false);
+        client.options.sprintKey.setPressed(false);
+
+        Vec3d eye = client.player.getEyePos();
+        Vec3d toTarget = target.subtract(eye);
+        double horizontalLenSq = toTarget.x * toTarget.x + toTarget.z * toTarget.z;
+        if (horizontalLenSq < 1.0E-6) {
+            return;
+        }
+
+        double invLen = 1.0 / Math.sqrt(horizontalLenSq);
+        Vec3d right = new Vec3d(toTarget.z * invLen, 0.0, -toTarget.x * invLen);
+        Vec3d playerPos = client.player.getPos();
+        Vec3d rightPos = playerPos.add(right.multiply(SAFE_SHOT_REPOSITION_STEP));
+        Vec3d leftPos = playerPos.add(right.multiply(-SAFE_SHOT_REPOSITION_STEP));
+        double feetY = client.player.getY();
+        PathWorldView pathWorld = new LivePathWorld(world);
+
+        boolean canRight = isPlayerBoxClearAt(
+                pathWorld,
+                rightPos.x,
+                feetY,
+                rightPos.z,
+                SAFE_SHOT_REPOSITION_CLEARANCE
+        );
+        boolean canLeft = isPlayerBoxClearAt(
+                pathWorld,
+                leftPos.x,
+                feetY,
+                leftPos.z,
+                SAFE_SHOT_REPOSITION_CLEARANCE
+        );
+
+        boolean rightShot = canRight && hasSafeClearShotFrom(client, world, rightPos, target);
+        boolean leftShot = canLeft && hasSafeClearShotFrom(client, world, leftPos, target);
+
+        if (rightShot || (!leftShot && canRight)) {
+            client.options.rightKey.setPressed(true);
+            AUTO_WAS_DRIVING = true;
+            return;
+        }
+
+        if (leftShot || canLeft) {
+            client.options.leftKey.setPressed(true);
+            AUTO_WAS_DRIVING = true;
+        }
     }
 
     private static boolean shouldJumpOutOfWater(MinecraftClient client, ClientWorld world, long[] path) {
@@ -6634,7 +7004,7 @@ final class HeadHighlighterController {
 
             ZOMBIE_ESTIMATED_VELOCITIES.put(
                     id,
-                    clampHorizontalLead(smoothedVelocity, ZOMBIE_MAX_HORIZONTAL_LEAD)
+                    clampHorizontalLead(smoothedVelocity, ZOMBIE_MAX_TRACKED_HORIZONTAL_SPEED)
             );
         }
 
@@ -6642,22 +7012,66 @@ final class HeadHighlighterController {
         ZOMBIE_ESTIMATED_VELOCITIES.entrySet().removeIf(entry -> !seenIds.contains(entry.getKey()));
     }
 
-    private static Vec3d getBestZombieAimPoint(ClientWorld world, Vec3d eye, ZombieEntity zombie) {
-        Vec3d predictedHead = getPredictedZombieHeadTarget(zombie);
+    private static Vec3d getBestZombieAimPoint(ClientWorld world, Vec3d eye, ZombieEntity zombie, ItemStack weapon) {
+        Vec3d lead = getEstimatedZombieHorizontalLead(zombie, eye, weapon);
+        Vec3d halfLead = lead.multiply(0.5);
+
+        Vec3d predictedHead = getPredictedZombieHeadTarget(zombie, lead);
         if (hasSafeClearShot(world, eye, predictedHead)) {
             return predictedHead;
         }
 
-        Vec3d predictedChest = getPredictedZombieChestTarget(zombie);
+        Vec3d predictedChest = getPredictedZombieChestTarget(zombie, lead);
         if (hasSafeClearShot(world, eye, predictedChest)) {
             return predictedChest;
+        }
+
+        if (lead.x != 0.0 || lead.z != 0.0) {
+            Vec3d halfLeadHead = getPredictedZombieHeadTarget(zombie, halfLead);
+            if (hasSafeClearShot(world, eye, halfLeadHead)) {
+                return halfLeadHead;
+            }
+
+            Vec3d halfLeadChest = getPredictedZombieChestTarget(zombie, halfLead);
+            if (hasSafeClearShot(world, eye, halfLeadChest)) {
+                return halfLeadChest;
+            }
+        }
+
+        Vec3d currentHead = getPredictedZombieHeadTarget(zombie, Vec3d.ZERO);
+        if (hasSafeClearShot(world, eye, currentHead)) {
+            return currentHead;
+        }
+
+        Vec3d currentChest = getPredictedZombieChestTarget(zombie, Vec3d.ZERO);
+        if (hasSafeClearShot(world, eye, currentChest)) {
+            return currentChest;
         }
 
         return null;
     }
 
-    private static Vec3d getPredictedZombieHeadTarget(ZombieEntity zombie) {
-        Vec3d lead = getEstimatedZombieHorizontalLead(zombie);
+    private static Vec3d getPointBlankZombieAimPoint(ClientWorld world, Vec3d eye, ZombieEntity zombie) {
+        Vec3d head = getPredictedZombieHeadTarget(zombie, Vec3d.ZERO);
+        if (hasClearShot(world, eye, head)) {
+            return head;
+        }
+
+        Vec3d chest = getPredictedZombieChestTarget(zombie, Vec3d.ZERO);
+        if (hasClearShot(world, eye, chest)) {
+            return chest;
+        }
+
+        Box box = zombie.getBoundingBox();
+        Vec3d center = new Vec3d(
+                zombie.getX(),
+                box.minY + (box.maxY - box.minY) * 0.55,
+                zombie.getZ()
+        );
+        return hasClearShot(world, eye, center) ? center : null;
+    }
+
+    private static Vec3d getPredictedZombieHeadTarget(ZombieEntity zombie, Vec3d lead) {
         Box box = zombie.getBoundingBox();
 
         double aimY = MathHelper.clamp(
@@ -6673,8 +7087,7 @@ final class HeadHighlighterController {
         );
     }
 
-    private static Vec3d getPredictedZombieChestTarget(ZombieEntity zombie) {
-        Vec3d lead = getEstimatedZombieHorizontalLead(zombie);
+    private static Vec3d getPredictedZombieChestTarget(ZombieEntity zombie, Vec3d lead) {
         Box box = zombie.getBoundingBox();
         double aimY = box.minY + (box.maxY - box.minY) * 0.72;
 
@@ -6685,12 +7098,57 @@ final class HeadHighlighterController {
         );
     }
 
-    private static Vec3d getEstimatedZombieHorizontalLead(ZombieEntity zombie) {
+    private static Vec3d getEstimatedZombieHorizontalLead(ZombieEntity zombie, Vec3d eye, ItemStack weapon) {
         Vec3d velocity = ZOMBIE_ESTIMATED_VELOCITIES.getOrDefault(zombie.getId(), Vec3d.ZERO);
+        double distance = Math.sqrt(Math.max(0.0, horizontalDistanceSq(eye, zombie.getPos())));
+        double leadTicks = getZombieLeadTicks(weapon, distance);
+
         return clampHorizontalLead(
-                velocity.multiply(ZOMBIE_LEAD_TICKS),
+                velocity.multiply(leadTicks),
                 ZOMBIE_MAX_HORIZONTAL_LEAD
         );
+    }
+
+    private static double getZombieLeadTicks(ItemStack weapon, double distance) {
+        double baseLeadTicks = getZombieBaseLeadTicks(weapon);
+        double maxLeadTicks = getZombieMaxLeadTicks(weapon);
+        return MathHelper.clamp(
+                baseLeadTicks + distance * ZOMBIE_DISTANCE_LEAD_TICKS_PER_BLOCK,
+                baseLeadTicks,
+                maxLeadTicks
+        );
+    }
+
+    private static double getZombieBaseLeadTicks(ItemStack weapon) {
+        if (isNamedStack(weapon, M16_NAME)) {
+            return ZOMBIE_M16_BASE_LEAD_TICKS;
+        }
+
+        if (isNamedStack(weapon, PISTOL_NAME)) {
+            return ZOMBIE_PISTOL_BASE_LEAD_TICKS;
+        }
+
+        if (isNamedStack(weapon, SHOTGUN_NAME)) {
+            return ZOMBIE_SHOTGUN_BASE_LEAD_TICKS;
+        }
+
+        return ZOMBIE_DEFAULT_BASE_LEAD_TICKS;
+    }
+
+    private static double getZombieMaxLeadTicks(ItemStack weapon) {
+        if (isNamedStack(weapon, M16_NAME)) {
+            return ZOMBIE_M16_MAX_LEAD_TICKS;
+        }
+
+        if (isNamedStack(weapon, PISTOL_NAME)) {
+            return ZOMBIE_PISTOL_MAX_LEAD_TICKS;
+        }
+
+        if (isNamedStack(weapon, SHOTGUN_NAME)) {
+            return ZOMBIE_SHOTGUN_MAX_LEAD_TICKS;
+        }
+
+        return ZOMBIE_DEFAULT_MAX_LEAD_TICKS;
     }
 
     private static Vec3d clampHorizontalLead(Vec3d value, double maxLength) {
@@ -6734,7 +7192,96 @@ final class HeadHighlighterController {
         return hasClearShot(world, from, to.add(right.multiply(SAFE_SHOT_LATERAL_MARGIN)))
                 && hasClearShot(world, from, to.add(right.multiply(-SAFE_SHOT_LATERAL_MARGIN)))
                 && hasClearShot(world, from, to.add(up.multiply(SAFE_SHOT_VERTICAL_MARGIN)))
-                && hasClearShot(world, from, to.add(up.multiply(-SAFE_SHOT_VERTICAL_MARGIN)));
+                && hasClearShot(world, from, to.add(up.multiply(-SAFE_SHOT_VERTICAL_MARGIN)))
+                && hasClearShotCorridor(world, from, to, SAFE_SHOT_CORRIDOR_MARGIN);
+    }
+
+    private static boolean hasSafeClearShotFrom(
+            MinecraftClient client,
+            ClientWorld world,
+            Vec3d playerPos,
+            Vec3d target
+    ) {
+        if (client.player == null) {
+            return false;
+        }
+
+        Vec3d eye = new Vec3d(
+                playerPos.x,
+                playerPos.y + client.player.getStandingEyeHeight(),
+                playerPos.z
+        );
+        return hasSafeClearShot(world, eye, target);
+    }
+
+    private static boolean hasClearShotCorridor(ClientWorld world, Vec3d from, Vec3d to, double margin) {
+        Vec3d segment = to.subtract(from);
+        double lengthSq = segment.lengthSquared();
+        if (lengthSq < 1.0E-6) {
+            return false;
+        }
+
+        double length = Math.sqrt(lengthSq);
+        Vec3d dir = segment.multiply(1.0 / length);
+        Box corridor = new Box(
+                Math.min(from.x, to.x) - margin,
+                Math.min(from.y, to.y) - margin,
+                Math.min(from.z, to.z) - margin,
+                Math.max(from.x, to.x) + margin,
+                Math.max(from.y, to.y) + margin,
+                Math.max(from.z, to.z) + margin
+        );
+
+        int minX = MathHelper.floor(corridor.minX);
+        int maxX = MathHelper.floor(corridor.maxX);
+        int minY = MathHelper.floor(corridor.minY);
+        int maxY = MathHelper.floor(corridor.maxY);
+        int minZ = MathHelper.floor(corridor.minZ);
+        int maxZ = MathHelper.floor(corridor.maxZ);
+        BlockPos.Mutable pos = new BlockPos.Mutable();
+
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    pos.set(x, y, z);
+
+                    if (!isLoaded(world, pos)) {
+                        return false;
+                    }
+
+                    BlockState state = world.getBlockState(pos);
+                    VoxelShape collision = state.getCollisionShape(world, pos);
+                    if (collision.isEmpty()) {
+                        continue;
+                    }
+
+                    for (Box localBox : collision.getBoundingBoxes()) {
+                        Box worldBox = localBox.offset(pos.getX(), pos.getY(), pos.getZ());
+                        if (distanceSqFromSegmentToBox(from, dir, length, worldBox) < margin * margin) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static double distanceSqFromSegmentToBox(Vec3d start, Vec3d dir, double length, Box box) {
+        double closestX = MathHelper.clamp(start.x, box.minX, box.maxX);
+        double closestY = MathHelper.clamp(start.y, box.minY, box.maxY);
+        double closestZ = MathHelper.clamp(start.z, box.minZ, box.maxZ);
+        double t = (closestX - start.x) * dir.x
+                + (closestY - start.y) * dir.y
+                + (closestZ - start.z) * dir.z;
+        t = MathHelper.clamp(t, 0.0, length);
+
+        Vec3d point = start.add(dir.multiply(t));
+        double x = point.x < box.minX ? box.minX - point.x : point.x > box.maxX ? point.x - box.maxX : 0.0;
+        double y = point.y < box.minY ? box.minY - point.y : point.y > box.maxY ? point.y - box.maxY : 0.0;
+        double z = point.z < box.minZ ? box.minZ - point.z : point.z > box.maxZ ? point.z - box.maxZ : 0.0;
+        return x * x + y * y + z * z;
     }
 
     private static boolean isZombieVeryClose(MinecraftClient client, ClientWorld world) {
@@ -6743,9 +7290,9 @@ final class HeadHighlighterController {
         }
 
         Box searchBox = client.player.getBoundingBox().expand(
-                FOOD_CANCEL_NEAR_ZOMBIE_RANGE,
+                CLOSE_ZOMBIE_THREAT_RANGE,
                 1.75,
-                FOOD_CANCEL_NEAR_ZOMBIE_RANGE
+                CLOSE_ZOMBIE_THREAT_RANGE
         );
 
         List<ZombieEntity> zombies = world.getEntitiesByType(
@@ -6755,7 +7302,38 @@ final class HeadHighlighterController {
         );
 
         for (ZombieEntity zombie : zombies) {
-            if (client.player.squaredDistanceTo(zombie) <= FOOD_CANCEL_NEAR_ZOMBIE_RANGE_SQ) {
+            if (client.player.squaredDistanceTo(zombie) <= CLOSE_ZOMBIE_THREAT_RANGE_SQ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean shouldStopLootingForCombat(MinecraftClient client, ClientWorld world) {
+        return isZombieVeryClose(client, world) || hasLootAbortZombieCrowd(client, world);
+    }
+
+    private static boolean hasLootAbortZombieCrowd(MinecraftClient client, ClientWorld world) {
+        if (client.player == null || world == null) {
+            return false;
+        }
+
+        Box searchBox = client.player.getBoundingBox().expand(LOOT_ABORT_ZOMBIE_RADIUS);
+        List<ZombieEntity> zombies = world.getEntitiesByType(
+                TypeFilter.instanceOf(ZombieEntity.class),
+                searchBox,
+                zombie -> isShootableZombie(client, zombie)
+        );
+
+        int nearbyZombieCount = 0;
+        for (ZombieEntity zombie : zombies) {
+            if (client.player.squaredDistanceTo(zombie) > LOOT_ABORT_ZOMBIE_RADIUS_SQ) {
+                continue;
+            }
+
+            nearbyZombieCount++;
+            if (nearbyZombieCount > LOOT_ABORT_ZOMBIE_COUNT) {
                 return true;
             }
         }
